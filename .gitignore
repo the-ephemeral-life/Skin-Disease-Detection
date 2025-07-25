@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+.Python
+venv/
+env/
+
+# Data
+data/raw/
+data/processed/
+
+# Models
+models/
+*.h5
+*.keras
+*.pt
+*.pth
+*.onnx
+
+# Logs
+logs/
+tensorboard/
+wandb/
+
+# IDE specific files
+.idea/
+.vscode/
+
+# Jupyter Notebook specific files
+.ipynb_checkpoints/
