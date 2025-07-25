@@ -9,7 +9,7 @@ from PIL import Image # Pillow library for image handling
 
 # --- Configuration ---
 # Define paths relative to your project root
-DATA_RAW_DIR = 'C:/Skin_Disease_Detection/Skin-Disease-Detection/data/raw'
+DATA_RAW_DIR = 'data/raw'
 METADATA_FILE = os.path.join(DATA_RAW_DIR, 'HAM10000_metadata.csv')
 IMAGE_DIR_PART1 = os.path.join(DATA_RAW_DIR, 'HAM10000_images_part1')
 IMAGE_DIR_PART2 = os.path.join(DATA_RAW_DIR, 'HAM10000_images_part2')
