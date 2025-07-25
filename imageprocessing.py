@@ -11,8 +11,20 @@ from PIL import Image # Pillow library for image handling
 # Define paths relative to your project root
 DATA_RAW_DIR = 'data/raw'
 METADATA_FILE = os.path.join(DATA_RAW_DIR, 'HAM10000_metadata.csv')
-IMAGE_DIR_PART1 = os.path.join(DATA_RAW_DIR, 'HAM10000_images_part1')
-IMAGE_DIR_PART2 = os.path.join(DATA_RAW_DIR, 'HAM10000_images_part2')
+
+# IMPORTANT: Adjust these paths based on how you extracted the HAM10000 images.
+# You need to find the EXACT folder names where your .jpg images are located.
+#
+# COMMON SCENARIOS:
+# 1. Images are in two folders named 'HAM10000_images_part1' and 'HAM10000_images_part2':
+#    IMAGE_DIRS = [os.path.join(DATA_RAW_DIR, 'HAM10000_images_part1'),
+#                  os.path.join(DATA_RAW_DIR, 'HAM10000_images_part2')]
+#
+# 2. Images are in two folders named 'HAM10000_images_part_1' and 'HAM10000_images_part_2' (with underscores):
+IMAGE_DIRS = [os.path.join(DATA_RAW_DIR, 'HAM10000_images_part_1'),
+            os.path.join(DATA_RAW_DIR, 'HAM10000_images_part_2')]
+
+
 
 # Target image dimensions for your model
 IMG_HEIGHT = 224
@@ -25,12 +37,17 @@ TARGET_DISEASES = ['mel', 'nv', 'bcc', 'bkl']
 
 # --- Step 1: Load Metadata and Filter Data ---
 print("Step 1: Loading metadata and filtering data...")
+# Debugging: Print the absolute path the script is looking for
+absolute_metadata_path = os.path.abspath(METADATA_FILE)
+print(f"Attempting to load metadata from: {absolute_metadata_path}")
+
 try:
     df = pd.read_csv(METADATA_FILE)
     print(f"Original dataset shape: {df.shape}")
 except FileNotFoundError:
     print(f"Error: Metadata file not found at {METADATA_FILE}")
-    print("Please ensure 'HAM10000_metadata.csv' is in 'data/raw/'")
+    print(f"Please ensure 'HAM10000_metadata.csv' is in '{os.path.abspath(DATA_RAW_DIR)}'")
+    print("Also, ensure you are running the script from your project's root directory.")
     exit()
 
 # Filter for the target diseases
@@ -54,25 +71,46 @@ print(f"Number of classes: {num_classes}")
 print("Step 3: Creating full image paths...")
 # Create a dictionary to quickly look up image paths
 imageid_to_path = {}
+found_images_count = 0
+total_images_to_check = len(df_filtered)
+
+# Debugging: Print the absolute paths being checked for images
+print(f"Checking for images in directories: {[os.path.abspath(d) for d in IMAGE_DIRS]}")
+
+
 for img_id in df_filtered['image_id']:
-    # Check in part1 folder
-    path1 = os.path.join(IMAGE_DIR_PART1, f"{img_id}.jpg")
-    if os.path.exists(path1):
-        imageid_to_path[img_id] = path1
-    else:
-        # Check in part2 folder
-        path2 = os.path.join(IMAGE_DIR_PART2, f"{img_id}.jpg")
-        if os.path.exists(path2):
-            imageid_to_path[img_id] = path2
-        else:
-            print(f"Warning: Image {img_id}.jpg not found in either part1 or part2 directories.")
+    found_path = False
+    for img_dir in IMAGE_DIRS:
+        current_path = os.path.join(img_dir, f"{img_id}.jpg")
+        if os.path.exists(current_path):
+            imageid_to_path[img_id] = current_path
+            found_path = True
+            found_images_count += 1
+            break # Found the image, move to next img_id
+    if not found_path:
+        # Only print warnings for a few missing images to avoid spamming the console
+        if found_images_count < 20 or (total_images_to_check - found_images_count) < 20:
+            print(f"Warning: Image {img_id}.jpg not found in any of the specified directories.")
+
+print(f"Found {found_images_count} out of {total_images_to_check} images.")
 
 # Add the 'path' column to the DataFrame
 df_filtered['path'] = df_filtered['image_id'].map(imageid_to_path)
 
-# Drop rows where image path was not found (should be rare if data is complete)
+# Drop rows where image path was not found
+initial_rows = len(df_filtered)
 df_filtered.dropna(subset=['path'], inplace=True)
+dropped_rows = initial_rows - len(df_filtered)
+if dropped_rows > 0:
+    print(f"Dropped {dropped_rows} rows due to missing image paths.")
 print(f"Dataset shape after path verification: {df_filtered.shape}")
+
+# Check if the dataframe is empty after path verification
+if df_filtered.empty:
+    print("\nERROR: No images were found. Please double-check your 'IMAGE_DIRS' configuration.")
+    print("Ensure the folder names in 'IMAGE_DIRS' exactly match the folders where your HAM10000 images are stored.")
+    print("Example: If your images are in 'data/raw/HAM10000_images_all/', set IMAGE_DIRS = [os.path.join(DATA_RAW_DIR, 'HAM10000_images_all')]")
+    exit() # Exit the script if no images are found
 
 # --- Step 4: Data Splitting ---
 # Split data into training, validation, and test sets.
