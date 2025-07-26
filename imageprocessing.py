@@ -213,4 +213,7 @@ for i in range(min(9, len(images))): # Display up to 9 images
 plt.tight_layout()
 plt.show()
 
+def get_data_generators():
+    return (train_generator, validation_generator, test_generator)
+
 print("\nPreprocessing complete. Ready for model building and training!")
