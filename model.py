@@ -7,7 +7,11 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np # Needed for class_weight
 
-# --- Configuration (Ensure these match your preprocessing script) ---
+# Import the get_data_generators function from your preprocessing script
+from imageprocessing import get_data_generators
+from sklearn.utils import class_weight # Ensure this is imported for class_weight calculation
+
+# --- Configuration ---
 MODEL_SAVE_DIR = 'models'
 os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
 INITIAL_MODEL_PATH = os.path.join(MODEL_SAVE_DIR, 'best_skin_disease_model.keras')
@@ -16,45 +20,44 @@ FINE_TUNED_MODEL_PATH = os.path.join(MODEL_SAVE_DIR, 'fine_tuned_skin_disease_mo
 IMG_HEIGHT = 224
 IMG_WIDTH = 224
 BATCH_SIZE = 32
-NUM_CLASSES = 4 
+NUM_CLASSES = 4 # Ensure this matches your actual number of classes
 
-from imageprocessing import get_data_generators
-
-train_generator, validation_generator, test_generator = get_data_generators()
 # Fine-tuning parameters
 FINE_TUNE_EPOCHS = 30 # Number of additional epochs for fine-tuning
-FINE_TUNE_LEARNING_RATE = 0.00001 # VERY IMPORTANT: Use a much smaller learning rate for fine-tuning
+# VERY IMPORTANT: Use a much smaller learning rate for fine-tuning
+# If performance got worse, this is often the primary culprit.
+FINE_TUNE_LEARNING_RATE = 0.000001 # Reduced from 0.00001 to 0.000001
 
-# --- IMPORTANT: Ensure your data generators are available ---
-# You need to run the 'image-processing-code' script first to get these.
-try:
-    _ = train_generator
-    _ = validation_generator
-    _ = test_generator
-    print("Data generators (train_generator, validation_generator, test_generator) are available.")
-except NameError:
-    print("ERROR: Data generators not found. Please ensure 'image-processing-code' script was run successfully.")
-    print("Exiting: Data generators are required for model fine-tuning.")
+# --- Get Data Generators ---
+# Call the function from the preprocessing script to get the generators
+print("Getting data generators...")
+train_generator, validation_generator, test_generator, train_df = get_data_generators(
+    img_height=IMG_HEIGHT, img_width=IMG_WIDTH, batch_size=BATCH_SIZE
+)
+
+# Check if generators were successfully created
+if train_generator is None:
+    print("ERROR: Data generators could not be created. Exiting.")
     exit()
+else:
+    print("Data generators (train_generator, validation_generator, test_generator) are available.")
 
-# --- Optional: Calculate Class Weights (Highly Recommended for Imbalanced Data) ---
-# Assuming train_df is available from the preprocessing script
+
+# --- Calculate Class Weights (Highly Recommended for Imbalanced Data) ---
+# Use train_df returned by get_data_generators for robust class weight calculation
+print("\nCalculating class weights...")
 try:
-    from sklearn.utils import class_weight
-    # train_df needs to be available from the preprocessing script's scope
-    # If not, you'll need to re-load the metadata and split to get train_df
-    # For simplicity, assuming train_df is available here.
     class_weights_array = class_weight.compute_class_weight(
         class_weight='balanced',
-        classes=np.unique(train_generator.labels), # Use labels from the generator if train_df isn't directly available
-        y=train_generator.labels
+        classes=np.unique(train_df['label']), # Use labels from the DataFrame
+        y=train_df['label']
     )
     class_weights_dict = dict(enumerate(class_weights_array))
     print(f"Calculated class weights: {class_weights_dict}")
-except NameError:
-    print("WARNING: train_generator.labels not available for class weight calculation. Skipping class weighting.")
-    print("If you want to use class weights, ensure train_generator.labels is accessible or re-create train_df.")
+except Exception as e:
+    print(f"WARNING: Could not calculate class weights: {e}. Skipping class weighting.")
     class_weights_dict = None # Set to None if not using
+
 
 # --- Step 1: Load the best model from initial training ---
 print(f"\nStep 1: Loading the best model from initial training: {INITIAL_MODEL_PATH}")
@@ -67,17 +70,48 @@ except Exception as e:
     exit()
 
 # --- Step 2: Unfreeze the base model layers ---
-print("\nStep 2: Unfreezing the base model layers for fine-tuning...")
+print("\nStep 2: Unfreezing specific base model layers for fine-tuning...")
 
 # Access the base model (ResNet50) within the loaded model
-# Assuming the first layer of your model is the ResNet50 base
-# You can verify this by checking model.layers[0].name
 base_model = model.layers[0]
 
-# Set the entire base model to be trainable
+# Set the entire base model to be trainable (temporarily, for partial unfreezing below)
 base_model.trainable = True
 
+# IMPORTANT: Implement partial unfreezing.
+# It's often beneficial to keep the very early layers frozen as they learn
+# very generic features that are useful across many domains.
+# Unfreeze only the later layers for fine-tuning.
+# ResNet50 has 175 layers. We'll freeze the first ~140-150 layers
+# (keeping the initial feature extraction stable) and unfreeze the rest.
+# You can experiment with this number.
+# A common strategy is to unfreeze from a specific convolutional block onwards.
+# For ResNet50, 'conv5_block1_0_conv' is typically a good point to start unfreezing.
+
+unfreeze_from_layer = None
+# Iterate through layers to find a good unfreezing point (e.g., start of the last block)
+# For ResNet50, 'conv5_block1_0_conv' is a common starting point for unfreezing the last block.
+for i, layer in enumerate(base_model.layers):
+    if 'conv5_block1_0_conv' in layer.name:
+        unfreeze_from_layer = i
+        break
+
+# Fallback: if specific layer not found, unfreeze the last N layers
+if unfreeze_from_layer is None:
+    print("Could not find specific layer to unfreeze from. Unfreezing the last 50 layers as a fallback.")
+    unfreeze_from_layer = len(base_model.layers) - 50
+    if unfreeze_from_layer < 0: # Ensure index is not negative
+        unfreeze_from_layer = 0
+
+# Freeze layers up to the determined point
+for layer in base_model.layers[:unfreeze_from_layer]:
+    layer.trainable = False
+
+print(f"Kept {unfreeze_from_layer} layers of the base model frozen. Unfrozen {len(base_model.layers) - unfreeze_from_layer} layers.")
+
+
 # --- Step 3: Re-compile the model with a low/very low learning rate ---
+# IMPORTANT: You MUST re-compile the model after changing `trainable` status.
 print("\nStep 3: Re-compiling the model with a very low learning rate for fine-tuning...")
 optimizer_fine_tune = Adam(learning_rate=FINE_TUNE_LEARNING_RATE)
 
