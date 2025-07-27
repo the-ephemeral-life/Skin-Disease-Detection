@@ -4,168 +4,160 @@ from tensorflow.keras import layers, Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 import os
-import matplotlib.pyplot as plt # For plotting training history
+import matplotlib.pyplot as plt
+import numpy as np # Needed for class_weight
 
 # --- Configuration (Ensure these match your preprocessing script) ---
-# Define paths for saving the model
 MODEL_SAVE_DIR = 'models'
-os.makedirs(MODEL_SAVE_DIR, exist_ok=True) # Create models directory if it doesn't exist
+os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+INITIAL_MODEL_PATH = os.path.join(MODEL_SAVE_DIR, 'best_skin_disease_model.keras')
+FINE_TUNED_MODEL_PATH = os.path.join(MODEL_SAVE_DIR, 'fine_tuned_skin_disease_model.keras')
 
-# Target image dimensions
 IMG_HEIGHT = 224
 IMG_WIDTH = 224
 BATCH_SIZE = 32
+NUM_CLASSES = 4 
 
-# Number of classes for specific problem (MEL, NV, BCC, BKL = 4 classes)
-# This should match the number of unique 'dx' values you filtered for.
-# You can get this from train_generator.num_classes or len(label_encoder.classes_)
-NUM_CLASSES = 4 # Adjust if you include more diseases later
+from imageprocessing import get_data_generators
 
-# Training parameters
-EPOCHS = 50 # You might need more or less, EarlyStopping will help
-LEARNING_RATE = 0.0001 # Start with a small learning rate for transfer learning
+train_generator, validation_generator, test_generator = get_data_generators()
+# Fine-tuning parameters
+FINE_TUNE_EPOCHS = 30 # Number of additional epochs for fine-tuning
+FINE_TUNE_LEARNING_RATE = 0.00001 # VERY IMPORTANT: Use a much smaller learning rate for fine-tuning
 
 # --- IMPORTANT: Ensure your data generators are available ---
 # You need to run the 'image-processing-code' script first to get these.
-from imageprocessing import get_data_generators
-train_generator, validation_generator, test_generator = get_data_generators()
-
-# Placeholder for generators if running this script standalone for testing model definition
-# In a real scenario, these would be populated by your image processing script.
 try:
-    # Attempt to access the generators from the previous script's execution
     _ = train_generator
     _ = validation_generator
     _ = test_generator
     print("Data generators (train_generator, validation_generator, test_generator) are available.")
 except NameError:
-    print("WARNING: Data generators not found. Please ensure 'image-processing-code' script was run successfully.")
-    print("This script will define the model, but cannot train without the generators.")
-    # If generators are not available, we cannot proceed with training, so exit or mock them.
-    # For now, we'll just print a warning.
-    # In a production script, you might raise an error or call the preprocessing function here.
-    exit("Exiting: Data generators are required for model training.")
+    print("ERROR: Data generators not found. Please ensure 'image-processing-code' script was run successfully.")
+    print("Exiting: Data generators are required for model fine-tuning.")
+    exit()
 
+# --- Optional: Calculate Class Weights (Highly Recommended for Imbalanced Data) ---
+# Assuming train_df is available from the preprocessing script
+try:
+    from sklearn.utils import class_weight
+    # train_df needs to be available from the preprocessing script's scope
+    # If not, you'll need to re-load the metadata and split to get train_df
+    # For simplicity, assuming train_df is available here.
+    class_weights_array = class_weight.compute_class_weight(
+        class_weight='balanced',
+        classes=np.unique(train_generator.labels), # Use labels from the generator if train_df isn't directly available
+        y=train_generator.labels
+    )
+    class_weights_dict = dict(enumerate(class_weights_array))
+    print(f"Calculated class weights: {class_weights_dict}")
+except NameError:
+    print("WARNING: train_generator.labels not available for class weight calculation. Skipping class weighting.")
+    print("If you want to use class weights, ensure train_generator.labels is accessible or re-create train_df.")
+    class_weights_dict = None # Set to None if not using
 
-# --- Step 1: Build the ResNet50 Model using Transfer Learning ---
-print("Step 1: Building the ResNet50 model using transfer learning...")
+# --- Step 1: Load the best model from initial training ---
+print(f"\nStep 1: Loading the best model from initial training: {INITIAL_MODEL_PATH}")
+try:
+    model = tf.keras.models.load_model(INITIAL_MODEL_PATH)
+    print("Model loaded successfully.")
+except Exception as e:
+    print(f"ERROR: Could not load initial model from {INITIAL_MODEL_PATH}. Make sure it exists and was saved correctly.")
+    print(f"Error details: {e}")
+    exit()
 
-# Load the ResNet50 model pre-trained on ImageNet, excluding the top (classification) layer
-base_model = ResNet50(weights='imagenet', include_top=False,
-                      input_shape=(IMG_HEIGHT, IMG_WIDTH, 3))
+# --- Step 2: Unfreeze the base model layers ---
+print("\nStep 2: Unfreezing the base model layers for fine-tuning...")
 
-# Freeze the layers of the pre-trained base model
-# This prevents their weights from being updated during the initial training phase,
-# preserving the learned features from ImageNet.
-base_model.trainable = False
+# Access the base model (ResNet50) within the loaded model
+# Assuming the first layer of your model is the ResNet50 base
+# You can verify this by checking model.layers[0].name
+base_model = model.layers[0]
 
-# Add custom classification layers on top of the base model
-x = base_model.output
-x = layers.GlobalAveragePooling2D()(x) # Reduces spatial dimensions, averages features
-x = layers.Dense(256, activation='relu')(x) # A dense layer with ReLU activation
-x = layers.Dropout(0.5)(x) # Dropout for regularization to prevent overfitting
-predictions = layers.Dense(NUM_CLASSES, activation='softmax')(x) # Output layer with softmax for multi-class classification
+# Set the entire base model to be trainable
+base_model.trainable = True
 
-# Create the full model
-model = Model(inputs=base_model.input, outputs=predictions)
+# --- Step 3: Re-compile the model with a low/very low learning rate ---
+print("\nStep 3: Re-compiling the model with a very low learning rate for fine-tuning...")
+optimizer_fine_tune = Adam(learning_rate=FINE_TUNE_LEARNING_RATE)
 
-model.summary() # Print a summary of the model architecture
-
-# --- Step 2: Compile the Model ---
-print("\nStep 2: Compiling the model...")
-# Use Adam optimizer with a specific learning rate
-optimizer = Adam(learning_rate=LEARNING_RATE)
-
-# For multi-class classification with one-hot encoded labels (from class_mode='categorical')
-model.compile(optimizer=optimizer,
+model.compile(optimizer=optimizer_fine_tune,
               loss='categorical_crossentropy',
               metrics=['accuracy'])
 
-# --- Step 3: Define Callbacks ---
-print("\nStep 3: Defining callbacks for training...")
-# ModelCheckpoint: Saves the best model weights based on validation accuracy
-checkpoint_filepath = os.path.join(MODEL_SAVE_DIR, 'best_skin_disease_model.keras') # .keras is the recommended format
-model_checkpoint_callback = ModelCheckpoint(
-    filepath=checkpoint_filepath,
-    save_weights_only=False, # Save the entire model
-    monitor='val_accuracy', # Monitor validation accuracy
-    mode='max', # Save when validation accuracy is maximized
-    save_best_only=True, # Only save the best model
+model.summary() # Review the summary to see which layers are now trainable
+
+# --- Step 4: Define Callbacks for Fine-Tuning ---
+print("\nStep 4: Defining callbacks for fine-tuning...")
+# Use a new checkpoint path for the fine-tuned model
+fine_tune_checkpoint_callback = ModelCheckpoint(
+    filepath=FINE_TUNED_MODEL_PATH,
+    save_weights_only=False,
+    monitor='val_accuracy',
+    mode='max',
+    save_best_only=True,
     verbose=1
 )
 
-# EarlyStopping: Stops training if validation loss doesn't improve for 'patience' epochs
-early_stopping_callback = EarlyStopping(
-    monitor='val_loss', # Monitor validation loss
-    patience=10, # Number of epochs with no improvement after which training will be stopped
-    restore_best_weights=True, # Restore model weights from the epoch with the best value of the monitored quantity
-    verbose=1
-)
-
-# ReduceLROnPlateau: Reduces learning rate when a metric has stopped improving
-reduce_lr_on_plateau_callback = ReduceLROnPlateau(
-    monitor='val_loss', # Monitor validation loss
-    factor=0.1, # Factor by which the learning rate will be reduced. new_lr = lr * factor
-    patience=5, # Number of epochs with no improvement after which learning rate will be reduced
-    min_lr=0.000001, # Lower bound on the learning rate
-    verbose=1
-)
-
-callbacks = [
-    model_checkpoint_callback,
-    early_stopping_callback,
-    reduce_lr_on_plateau_callback
+# Early stopping and ReduceLROnPlateau can be reused
+fine_tune_callbacks = [
+    fine_tune_checkpoint_callback,
+    EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True, verbose=1),
+    ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=5, min_lr=0.0000001, verbose=1) # Even lower min_lr
 ]
 
-# --- Step 4: Train the Model ---
-print("\nStep 4: Starting model training...")
-history = model.fit(
+# --- Step 5: Continue training (Fine-tuning) ---
+print("\nStep 5: Starting model fine-tuning...")
+history_fine_tune = model.fit(
     train_generator,
-    steps_per_epoch=train_generator.samples // BATCH_SIZE, # Number of batches per epoch
-    epochs=EPOCHS,
+    steps_per_epoch=train_generator.samples // BATCH_SIZE,
+    epochs=FINE_TUNE_EPOCHS,
     validation_data=validation_generator,
-    validation_steps=validation_generator.samples // BATCH_SIZE, # Number of validation batches
-    callbacks=callbacks,
+    validation_steps=validation_generator.samples // BATCH_SIZE,
+    callbacks=fine_tune_callbacks,
+    class_weight=class_weights_dict, # Pass class weights here
     verbose=1
 )
 
-print("\nModel training complete!")
+print("\nModel fine-tuning complete!")
 
-# --- Step 5: Evaluate the Model on the Test Set ---
-print("\nStep 5: Evaluating the model on the test set...")
-# Load the best model saved by ModelCheckpoint for final evaluation
-# This ensures you evaluate the model that performed best on the validation set.
+# --- Step 6: Evaluate the Fine-Tuned Model on the Test Set ---
+print("\nStep 6: Evaluating the fine-tuned model on the test set...")
 try:
-    best_model = tf.keras.models.load_model(checkpoint_filepath)
-    print(f"Loaded best model from: {checkpoint_filepath}")
-    test_loss, test_accuracy = best_model.evaluate(test_generator, steps=test_generator.samples // BATCH_SIZE, verbose=1)
-    print(f"Test Loss: {test_loss:.4f}")
-    print(f"Test Accuracy: {test_accuracy:.4f}")
+    best_fine_tuned_model = tf.keras.models.load_model(FINE_TUNED_MODEL_PATH)
+    print(f"Loaded best fine-tuned model from: {FINE_TUNED_MODEL_PATH}")
+    test_loss_fine_tune, test_accuracy_fine_tune = best_fine_tuned_model.evaluate(
+        test_generator, steps=test_generator.samples // BATCH_SIZE, verbose=1
+    )
+    print(f"Fine-tuned Test Loss: {test_loss_fine_tune:.4f}")
+    print(f"Fine-tuned Test Accuracy: {test_accuracy_fine_tune:.4f}")
 except Exception as e:
-    print(f"Could not load best model for evaluation: {e}")
-    print("Evaluating the last trained model instead.")
-    test_loss, test_accuracy = model.evaluate(test_generator, steps=test_generator.samples // BATCH_SIZE, verbose=1)
-    print(f"Test Loss (last epoch model): {test_loss:.4f}")
-    print(f"Test Accuracy (last epoch model): {test_accuracy:.4f}")
+    print(f"Could not load best fine-tuned model for evaluation: {e}")
+    print("Evaluating the last fine-tuned model instead.")
+    test_loss_fine_tune, test_accuracy_fine_tune = model.evaluate(
+        test_generator, steps=test_generator.samples // BATCH_SIZE, verbose=1
+    )
+    print(f"Fine-tuned Test Loss (last epoch model): {test_loss_fine_tune:.4f}")
+    print(f"Fine-tuned Test Accuracy (last epoch model): {test_accuracy_fine_tune:.4f}")
 
 
-# --- Optional: Plot Training History ---
-print("\nOptional: Plotting training history...")
+# --- Optional: Plot Training History (Fine-tuning phase) ---
+print("\nOptional: Plotting fine-tuning history...")
 plt.figure(figsize=(12, 4))
 
 plt.subplot(1, 2, 1)
-plt.plot(history.history['accuracy'], label='Train Accuracy')
-plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
-plt.title('Model Accuracy')
+plt.plot(history_fine_tune.history['accuracy'], label='Train Accuracy (Fine-tune)')
+plt.plot(history_fine_tune.history['val_accuracy'], label='Validation Accuracy (Fine-tune)')
+plt.title('Model Accuracy (Fine-tuning Phase)')
 plt.xlabel('Epoch')
 plt.ylabel('Accuracy')
 plt.legend()
 plt.grid(True)
 
 plt.subplot(1, 2, 2)
-plt.plot(history.history['loss'], label='Train Loss')
-plt.plot(history.history['val_loss'], label='Validation Loss')
-plt.title('Model Loss')
+plt.plot(history_fine_tune.history['loss'], label='Train Loss (Fine-tune)')
+plt.plot(history_fine_tune.history['val_loss'], label='Validation Loss (Fine-tune)')
+plt.title('Model Loss (Fine-tuning Phase)')
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 plt.legend()
@@ -174,5 +166,5 @@ plt.grid(True)
 plt.tight_layout()
 plt.show()
 
-print("\nModel building and initial training complete. The best model is saved.")
-print(f"The trained model is saved at: {checkpoint_filepath}")
+print("\nFine-tuned model saved and evaluated.")
+print(f"The fine-tuned model is saved at: {FINE_TUNED_MODEL_PATH}")
