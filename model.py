@@ -6,6 +6,8 @@ from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLRO
 import os
 import matplotlib.pyplot as plt
 import numpy as np # Needed for class_weight
+import tensorflow.keras.backend as K # Import Keras backend as K to count parameters
+import tensorflow.keras.backend as K
 
 # Import the get_data_generators function from your preprocessing script
 from imageprocessing import get_data_generators
@@ -31,8 +33,13 @@ FINE_TUNE_LEARNING_RATE = 0.000001 # Reduced from 0.00001 to 0.000001
 # --- Get Data Generators ---
 # Call the function from the preprocessing script to get the generators
 print("Getting data generators...")
+# Pass the configuration variables to the get_data_generators function
 train_generator, validation_generator, test_generator, train_df = get_data_generators(
-    img_height=IMG_HEIGHT, img_width=IMG_WIDTH, batch_size=BATCH_SIZE
+    img_height=IMG_HEIGHT,
+    img_width=IMG_WIDTH,
+    batch_size=BATCH_SIZE
+    # Other parameters like metadata_file, image_dirs, target_diseases
+    # are already handled by default arguments in get_data_generators
 )
 
 # Check if generators were successfully created
@@ -69,45 +76,47 @@ except Exception as e:
     print(f"Error details: {e}")
     exit()
 
+# Print model summary to help identify layer names
+print("\nModel Summary after loading (inspect to find base_model layers):")
+model.summary()
+
 # --- Step 2: Unfreeze the base model layers ---
 print("\nStep 2: Unfreezing specific base model layers for fine-tuning...")
 
-# Access the base model (ResNet50) within the loaded model
-base_model = model.layers[0]
+# IMPORTANT CHANGE: Directly identify and set trainable status for layers within the loaded model.
+# The ResNet50 base layers are directly part of the 'model' here, not a nested 'base_model' object.
 
-# Set the entire base model to be trainable (temporarily, for partial unfreezing below)
-base_model.trainable = True
+# Find the index of the layer from which to start unfreezing.
+# Based on the summary, 'conv5_block1_0_conv' is a good candidate to start unfreezing the last block.
+# We'll unfreeze from this layer onwards, including it.
+unfreeze_from_layer_name = 'conv5_block1_0_conv'
+unfreeze_from_index = -1 # Initialize with -1 to indicate not found
 
-# IMPORTANT: Implement partial unfreezing.
-# It's often beneficial to keep the very early layers frozen as they learn
-# very generic features that are useful across many domains.
-# Unfreeze only the later layers for fine-tuning.
-# ResNet50 has 175 layers. We'll freeze the first ~140-150 layers
-# (keeping the initial feature extraction stable) and unfreeze the rest.
-# You can experiment with this number.
-# A common strategy is to unfreeze from a specific convolutional block onwards.
-# For ResNet50, 'conv5_block1_0_conv' is typically a good point to start unfreezing.
-
-unfreeze_from_layer = None
-# Iterate through layers to find a good unfreezing point (e.g., start of the last block)
-# For ResNet50, 'conv5_block1_0_conv' is a common starting point for unfreezing the last block.
-for i, layer in enumerate(base_model.layers):
-    if 'conv5_block1_0_conv' in layer.name:
-        unfreeze_from_layer = i
+# Iterate through all layers of the loaded model to find the starting point
+for i, layer in enumerate(model.layers):
+    if layer.name == unfreeze_from_layer_name:
+        unfreeze_from_index = i
         break
 
-# Fallback: if specific layer not found, unfreeze the last N layers
-if unfreeze_from_layer is None:
-    print("Could not find specific layer to unfreeze from. Unfreezing the last 50 layers as a fallback.")
-    unfreeze_from_layer = len(base_model.layers) - 50
-    if unfreeze_from_layer < 0: # Ensure index is not negative
-        unfreeze_from_layer = 0
+if unfreeze_from_index == -1:
+    print(f"WARNING: Could not find layer '{unfreeze_from_layer_name}'. This might lead to unexpected unfreezing behavior.")
+    print("Unfreezing the last 50 layers of the entire model as a fallback.")
+    # Fallback: Unfreeze the last N layers of the entire model if the specific layer isn't found.
+    # Adjust 50 based on how many layers you want to unfreeze from the end.
+    unfreeze_from_index = len(model.layers) - 50
+    if unfreeze_from_index < 0:
+        unfreeze_from_index = 0 # Ensure index is not negative
 
-# Freeze layers up to the determined point
-for layer in base_model.layers[:unfreeze_from_layer]:
-    layer.trainable = False
+# Set trainable status for all layers
+for i, layer in enumerate(model.layers):
+    if i < unfreeze_from_index:
+        layer.trainable = False # Freeze layers before the unfreeze_from_index
+    else:
+        layer.trainable = True # Unfreeze layers from unfreeze_from_index onwards
 
-print(f"Kept {unfreeze_from_layer} layers of the base model frozen. Unfrozen {len(base_model.layers) - unfreeze_from_layer} layers.")
+print(f"Layers before index {unfreeze_from_index} are frozen. Layers from index {unfreeze_from_index} onwards are unfrozen.")
+# Corrected: Use K.count_params
+print(f"Total trainable parameters after unfreezing: {np.sum([K.count_params(w) for w in model.trainable_weights])}")
 
 
 # --- Step 3: Re-compile the model with a low/very low learning rate ---
