@@ -150,9 +150,7 @@ efficientnet_base.trainable = True # Set the base model to be trainable
 # EfficientNet models have a different layer structure than ResNet.
 # You typically unfreeze a certain percentage or from a specific block.
 # For EfficientNetB0, unfreezing the last ~30-50% of layers is a good starting point.
-# Let's unfreeze layers from a certain percentage point.
-# EfficientNetB0 has around 230-240 layers (including activations, BN etc. within blocks)
-# We'll unfreeze the last ~100 layers as a starting point.
+
 unfreeze_from_index = len(efficientnet_base.layers) - 100 # Unfreeze last 100 layers
 if unfreeze_from_index < 0:
     unfreeze_from_index = 0 # Ensure index is not negative
