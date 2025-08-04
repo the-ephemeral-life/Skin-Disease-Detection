@@ -8,6 +8,7 @@ env/
 # Data
 data/raw/
 data/processed/
+data/augmented/
 
 # Models
 models/
