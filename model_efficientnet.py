@@ -39,7 +39,8 @@ INITIAL_LEARNING_RATE = 0.001 # A common starting point for EfficientNet, might 
 
 # Fine-tuning parameters (unfreezing and training the entire model)
 FINE_TUNE_EPOCHS = 30 # Number of additional epochs for fine-tuning.
-FINE_TUNE_LEARNING_RATE = 0.00001 # A very small learning rate for fine-tuning to prevent "catastrophic forgetting."
+# CRITICAL CHANGE: Drastically reduced learning rate for fine-tuning.
+FINE_TUNE_LEARNING_RATE = 0.0000001 # Even smaller learning rate to prevent catastrophic forgetting.
 
 # --- Get Data Generators: The main logic of the script ---
 # This function call prepares your data so it can be fed to the machine learning model.
@@ -202,28 +203,38 @@ if unfreeze_start_index == -1:
     if unfreeze_start_index < 0:
         unfreeze_start_index = 0
 
-# Set trainable status for all layers in the model
-for i, layer in enumerate(model_to_fine_tune.layers):
+# CRITICAL CHANGE: Set trainable status for all layers in the model.
+# First, set all layers to non-trainable by default.
+for layer in model_to_tune.layers: # Changed from model_to_fine_tune.layers to model_to_tune.layers
+    layer.trainable = False
+
+# Now, selectively unfreeze layers from the chosen index onwards.
+for i, layer in enumerate(model_to_tune.layers): # Changed from model_to_fine_tune.layers to model_to_tune.layers
     if i >= unfreeze_start_index:
         layer.trainable = True # Unfreeze from this point onwards
-    else:
-        layer.trainable = False # Keep earlier layers frozen
+
+    # CRITICAL CHANGE: Explicitly freeze all BatchNormalization layers.
+    # This is vital for stable fine-tuning of pre-trained models.
+    if isinstance(layer, tf.keras.layers.BatchNormalization):
+        layer.trainable = False
+        # print(f"Frozen BatchNormalization layer: {layer.name}") # Uncomment for debugging
 
 print(f"Layers before index {unfreeze_start_index} are frozen. Layers from index {unfreeze_start_index} onwards are unfrozen.")
+print("All BatchNormalization layers within the model have been explicitly frozen.")
 # We count and print the total number of trainable parameters to see the effect of unfreezing.
-print(f"Total trainable parameters after unfreezing: {np.sum([K.count_params(w) for w in model_to_fine_tune.trainable_weights])}")
+print(f"Total trainable parameters after unfreezing: {np.sum([K.count_params(w) for w in model_to_tune.trainable_weights])}") # Changed from model_to_fine_tune.trainable_weights to model_to_tune.trainable_weights
 
 
 print("\nStep 7: Re-compiling the model with a low/very low learning rate for fine-tuning...")
 # We must re-compile the model after changing the 'trainable' status of its layers.
 optimizer_fine_tune = Adam(learning_rate=FINE_TUNE_LEARNING_RATE)
 
-model_to_fine_tune.compile(optimizer=optimizer_fine_tune,
+model_to_tune.compile(optimizer=optimizer_fine_tune, # Changed from model_to_fine_tune.compile to model_to_tune.compile
                            loss='categorical_crossentropy',
                            metrics=['accuracy'])
 
 print("\nModel Summary (Fine-tuned EfficientNetB0):")
-model_to_fine_tune.summary()
+model_to_tune.summary() # Changed from model_to_fine_tune.summary to model_to_tune.summary
 
 print("\nStep 8: Defining callbacks for fine-tuning...")
 # We set up new callbacks for the fine-tuning phase.
@@ -244,7 +255,7 @@ fine_tune_callbacks = [
 
 print("\nStep 9: Starting model fine-tuning...")
 # We continue training the model from where it left off, but now with the unfrozen layers.
-history_fine_tune = model_to_fine_tune.fit(
+history_fine_tune = model_to_tune.fit( # Changed from model_to_fine_tune.fit to model_to_tune.fit
     train_generator,
     steps_per_epoch=train_generator.samples // BATCH_SIZE,
     epochs=FINE_TUNE_EPOCHS,
@@ -272,7 +283,7 @@ try:
 except Exception as e:
     print(f"Could not load best fine-tuned EfficientNetB0 model for evaluation: {e}")
     print("Evaluating the last trained EfficientNetB0 model instead.")
-    test_loss_efficientnet, test_accuracy_efficientnet = model_to_fine_tune.evaluate(
+    test_loss_efficientnet, test_accuracy_efficientnet = model_to_tune.evaluate( # Changed from model_to_fine_tune.evaluate to model_to_tune.evaluate
         test_generator, steps=test_generator.samples // BATCH_SIZE, verbose=1
     )
     print(f"Fine-tuned EfficientNetB0 Test Loss (last epoch model): {test_loss_efficientnet:.4f}")
