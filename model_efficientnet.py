@@ -177,39 +177,42 @@ print("\nModel Summary after loading for fine-tuning:")
 model_to_fine_tune.summary()
 
 
+# --- Step 6: Unfreezing specific EfficientNetB0 layers for fine-tuning...
 print("\nStep 6: Unfreezing specific EfficientNetB0 layers for fine-tuning...")
-# We find the base model within the overall model to unfreeze its layers.
-efficientnet_base = None
-for layer in model_to_fine_tune.layers:
-    if isinstance(layer, Model) and 'efficientnetb0' in layer.name:
-        efficientnet_base = layer
+
+# The EfficientNetB0 layers are directly part of model_to_fine_tune.
+# We will unfreeze layers from a certain point onwards.
+# A good heuristic for EfficientNetB0 is to unfreeze from 'block6a_expand_conv' onwards.
+unfreeze_from_layer_name = 'block6a_expand_conv' # Or 'block6b_expand_conv', 'block7a_expand_conv' for more/less unfreezing
+unfreeze_start_index = -1
+
+# Find the index of the layer from which to start unfreezing
+for i, layer in enumerate(model_to_fine_tune.layers):
+    if layer.name == unfreeze_from_layer_name:
+        unfreeze_start_index = i
         break
 
-if efficientnet_base is None:
-    print("ERROR: Could not find the EfficientNetB0 base model within the loaded model. Exiting.")
-    exit()
-else:
-    print(f"Found EfficientNetB0 base model: {efficientnet_base.name}")
+if unfreeze_start_index == -1:
+    print(f"WARNING: Could not find specific unfreezing layer '{unfreeze_from_layer_name}'.")
+    print("Falling back to unfreezing the last 100 layers of the entire model.")
+    # Fallback to unfreeze the last 100 layers of the entire model if the specific block name isn't found
+    unfreeze_start_index = len(model_to_fine_tune.layers) - 100
+    if unfreeze_start_index < 0:
+        unfreeze_start_index = 0
 
-# Set the base model to be trainable.
-efficientnet_base.trainable = True
+# Set trainable status for all layers in the model
+for i, layer in enumerate(model_to_fine_tune.layers):
+    if i >= unfreeze_start_index:
+        layer.trainable = True # Unfreeze from this point onwards
+    else:
+        layer.trainable = False # Keep earlier layers frozen
 
-# We implement a common strategy: partial unfreezing.
-# This keeps the initial, general feature detectors of the model frozen
-# while allowing the later, more specific feature detectors to adapt.
-unfreeze_from_index = len(efficientnet_base.layers) - 100 # Unfreeze last 100 layers.
-if unfreeze_from_index < 0:
-    unfreeze_from_index = 0
-
-for layer in efficientnet_base.layers[:unfreeze_from_index]:
-    layer.trainable = False
-
-print(f"Kept {unfreeze_from_index} layers of the EfficientNetB0 base model frozen. Unfrozen {len(efficientnet_base.layers) - unfreeze_from_index} layers.")
+print(f"Layers before index {unfreeze_start_index} are frozen. Layers from index {unfreeze_start_index} onwards are unfrozen.")
 # We count and print the total number of trainable parameters to see the effect of unfreezing.
 print(f"Total trainable parameters after unfreezing: {np.sum([K.count_params(w) for w in model_to_fine_tune.trainable_weights])}")
 
 
-print("\nStep 7: Re-compiling the model with a very low learning rate for fine-tuning...")
+print("\nStep 7: Re-compiling the model with a low/very low learning rate for fine-tuning...")
 # We must re-compile the model after changing the 'trainable' status of its layers.
 optimizer_fine_tune = Adam(learning_rate=FINE_TUNE_LEARNING_RATE)
 
