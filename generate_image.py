@@ -65,10 +65,10 @@ print("Step 3: Configuring ImageDataGenerator...")
 datagen = ImageDataGenerator(
     rescale=1./255, # Normalize pixel values
     rotation_range=90, # Randomly rotate images
-    width_shift_range=0.6, # Randomly shift images horizontally
-    height_shift_range=0.6, # Randomly shift images vertically
-    shear_range=0.6, # Apply shear transformation
-    zoom_range=0.6, # Randomly zoom into images
+    width_shift_range=0.3, # Randomly shift images horizontally
+    height_shift_range=0.3, # Randomly shift images vertically
+    shear_range=0.4, # Apply shear transformation
+    zoom_range=0.4, # Randomly zoom into images
     horizontal_flip=True, # Randomly flip images horizontally
     vertical_flip=True, # Randomly flip images vertically
     fill_mode='nearest' # Strategy for filling in new pixels
