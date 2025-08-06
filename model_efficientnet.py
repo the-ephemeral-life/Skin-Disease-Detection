@@ -173,17 +173,19 @@ except:
         exit()
 
 
-print("\nModel Summary after loading for fine-tuning:")
+# IMPORTANT: Print model summary here to debug layer names if needed.
+print("\nModel Summary after loading for fine-tuning (inspect for layer names):")
 model_to_fine_tune.summary()
 
 
 # --- Step 6: Unfreezing specific EfficientNetB0 layers for fine-tuning...
 print("\nStep 6: Unfreezing specific EfficientNetB0 layers for fine-tuning...")
 
-# The EfficientNetB0 layers are directly part of model_to_fine_tune.
-# We will unfreeze layers from a certain point onwards.
+# The EfficientNetB0 layers are directly part of model_to_fine_tune, not a nested model.
+# We will unfreeze layers from a certain point onwards based on their names.
 # A good heuristic for EfficientNetB0 is to unfreeze from 'block6a_expand_conv' onwards.
-unfreeze_from_layer_name = 'block6a_expand_conv' # Or 'block6b_expand_conv', 'block7a_expand_conv' for more/less unfreezing
+# This targets the later, more specialized feature extraction layers.
+unfreeze_from_layer_name = 'block6a_expand_conv' 
 unfreeze_start_index = -1
 
 # Find the index of the layer from which to start unfreezing
